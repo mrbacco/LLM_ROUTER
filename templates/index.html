@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+
+<link rel="stylesheet" href="/static/style.css">
+
+</head>
+
+<body>
+
+<h2>LLMs comparison tool and router</h2>
+
+<input id="msg">
+
+<select id="bacToolModel"></select>
+
+<button onclick="runBacTool()">SINGLE_LLM</button>
+
+<button onclick="multipleLlms()">Multiple LLMs</button>
+
+<label style="margin-left:10px;">
+<input type="checkbox" id="useFallback" checked>
+Use fallback
+</label>
+
+<div id="compareModels" class="models-panel"></div>
+
+<input type="file" id="file">
+
+<div id="output" class="output-area"></div>
+
+<script src="/static/script.js"></script>
+
+</body>
+
+</html>

@@ -1,0 +1,115 @@
+body {
+background: #0f172a;
+color: white;
+font-family: Arial, sans-serif;
+margin: 0;
+padding: 20px;
+}
+
+h2 {
+margin-top: 0;
+}
+
+input,
+select,
+button {
+padding: 10px;
+margin: 5px 5px 10px 0;
+font-size: 14px;
+}
+
+input#msg {
+min-width: 320px;
+}
+
+button {
+background: #2563eb;
+color: white;
+border: none;
+cursor: pointer;
+}
+
+button:hover {
+background: #1d4ed8;
+}
+
+.output-area {
+margin-top: 16px;
+background: #111827;
+border: 1px solid #334155;
+border-radius: 8px;
+padding: 12px;
+overflow-x: auto;
+}
+
+.models-panel {
+display: flex;
+flex-wrap: wrap;
+gap: 8px;
+margin: 4px 0 12px;
+}
+
+.model-choice {
+display: inline-flex;
+align-items: center;
+gap: 6px;
+padding: 6px 10px;
+border: 1px solid #334155;
+border-radius: 999px;
+background: #1f2937;
+font-size: 13px;
+}
+
+.model-choice input {
+margin: 0;
+}
+
+.model-badge {
+font-size: 11px;
+padding: 2px 6px;
+border-radius: 999px;
+text-transform: uppercase;
+letter-spacing: 0.04em;
+}
+
+.badge-local {
+background: #7c2d12;
+color: #fed7aa;
+}
+
+.badge-remote {
+background: #0c4a6e;
+color: #bae6fd;
+}
+
+.results-table {
+width: 100%;
+border-collapse: collapse;
+table-layout: fixed;
+}
+
+.results-table th,
+.results-table td {
+border: 1px solid #334155;
+padding: 10px;
+text-align: left;
+vertical-align: top;
+}
+
+.results-table th {
+background: #1e293b;
+color: #93c5fd;
+}
+
+.model-cell {
+width: 140px;
+font-weight: bold;
+color: #bfdbfe;
+word-break: break-word;
+}
+
+.response-cell {
+white-space: pre-wrap;
+word-break: break-word;
+line-height: 1.45;
+}
