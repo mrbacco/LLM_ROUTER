@@ -2,6 +2,7 @@ let availableModels = []
 let bacToolDefaultModel = "gemini-2.0-flash"
 let compareDefaultModels = ["gemini-2.0-flash", "gemini-2.0-flash-lite"]
 let runMode = "single"
+const DEFAULT_UPLOAD_STATUS = "Optional: choose files/images from the + menu, then send."
 
 function escapeHtml(text){
 return String(text)
@@ -47,7 +48,7 @@ return ` (${tags.join(", ")})`
 
 if(availableModels.length===0){
 bacToolSelect.innerHTML=""
-comparePanel.innerHTML="<span>No models available. Add GEMINI_API_KEY, GROQ_API_KEY, or OPENROUTER_API_KEY.</span>"
+comparePanel.innerHTML="<span>No models available. Add CLOUDFLARE_API_TOKEN+CLOUDFLARE_ACCOUNT_ID, GEMINI_API_KEY, OPENROUTER_API_KEY, or OLLAMA_API_KEY.</span>"
 return
 }
 
@@ -69,6 +70,7 @@ return `
 </label>
 `
 }).join("")
+renderHealthModelSelector()
 renderModeSummary()
 }
 
@@ -90,6 +92,11 @@ document.getElementById("compareModels").innerHTML=`
 <label class="model-choice"><input type="checkbox" class="compare-model" value="gemini-2.0-flash" checked><span>gemini-2.0-flash</span><span class="model-badge badge-remote">remote</span></label>
 <label class="model-choice"><input type="checkbox" class="compare-model" value="gemini-2.0-flash-lite" checked><span>gemini-2.0-flash-lite</span><span class="model-badge badge-remote">remote</span></label>
 `
+availableModels=[
+{id:"gemini-2.0-flash",provider:"gemini",type:"remote"},
+{id:"gemini-2.0-flash-lite",provider:"gemini",type:"remote"}
+]
+renderHealthModelSelector()
 }
 }
 
@@ -118,6 +125,26 @@ return
 container.innerHTML=files.map((f)=>`<span class="file-chip">${escapeHtml(f.name)}</span>`).join("")
 }
 
+function setOutputVisibility(show){
+const wrap=document.querySelector(".output-wrap")
+if(wrap){
+wrap.classList.toggle("hidden",!show)
+}
+}
+
+function setRequestStatus(isLoading,message){
+const status=document.getElementById("requestStatus")
+if(!status) return
+if(!isLoading){
+status.classList.add("hidden")
+status.innerHTML=""
+return
+}
+const label=escapeHtml(message||"Contacting model")
+status.innerHTML=`${label}<span class="dots"><span></span><span></span><span></span></span>`
+status.classList.remove("hidden")
+}
+
 function submitPrompt(){
 if(runMode==="multiple"){
 multipleLlms()
@@ -127,16 +154,10 @@ runBacTool()
 }
 
 function applyModeVisibility(){
-const panel=document.getElementById("singleModelPanel")
-if(panel) panel.classList.toggle("hidden",runMode!=="single")
-updateModeButtons()
-}
-
-function updateModeButtons(){
-const singleBtn=document.getElementById("singleModeBtn")
-const multipleBtn=document.getElementById("multipleModeBtn")
-if(singleBtn) singleBtn.classList.toggle("active",runMode==="single")
-if(multipleBtn) multipleBtn.classList.toggle("active",runMode==="multiple")
+const singlePanel=document.getElementById("singleModelPanel")
+const multiplePanel=document.getElementById("multipleModelPanel")
+if(singlePanel) singlePanel.classList.toggle("hidden",runMode!=="single")
+if(multiplePanel) multiplePanel.classList.toggle("hidden",runMode!=="multiple")
 }
 
 function renderModeSummary(){
@@ -150,6 +171,13 @@ return
 const model=document.getElementById("bacToolModel")
 const value=model ? model.value : ""
 summary.textContent=value ? `Single model (${value})` : "Single model"
+}
+
+function toggleRunMode(){
+const modeToggle=document.getElementById("modeMultipleEnabled")
+runMode=(modeToggle && modeToggle.checked) ? "multiple" : "single"
+applyModeVisibility()
+renderModeSummary()
 }
 
 function hideToolsMenu(){
@@ -169,33 +197,6 @@ const fileInput=document.getElementById("file")
 if(fileInput) fileInput.click()
 }
 
-function onSelectSingleMode(){
-runMode="single"
-hideToolsMenu()
-closeMultiModelModal()
-applyModeVisibility()
-renderModeSummary()
-}
-
-function onSelectMultipleMode(){
-runMode="multiple"
-hideToolsMenu()
-applyModeVisibility()
-openMultiModelModal()
-renderModeSummary()
-}
-
-function openMultiModelModal(){
-const modal=document.getElementById("multiModelModal")
-if(modal) modal.classList.remove("hidden")
-}
-
-function closeMultiModelModal(){
-const modal=document.getElementById("multiModelModal")
-if(modal) modal.classList.add("hidden")
-renderModeSummary()
-}
-
 function renderDocumentsInfo(data){
 const target=document.getElementById("documentsInfo")
 if(!target) return
@@ -204,9 +205,128 @@ if(docs.length===0){
 target.textContent="No indexed documents yet."
 return
 }
+
+function resetUploadStatus(){
+const status=document.getElementById("uploadStatus")
+if(status){
+status.textContent=DEFAULT_UPLOAD_STATUS
+}
+}
 const names=docs.slice(0,5).map((d)=>`${d.name} (${d.chunk_count} chunks)`).join(" | ")
 const extra=docs.length>5 ? ` | +${docs.length-5} more` : ""
 target.textContent=`Indexed documents: ${docs.length}. ${names}${extra}`
+}
+
+function healthDetailText(item){
+const detail=String(item.detail||"")
+if(detail.length<=92) return detail
+return `${detail.slice(0,92)}...`
+}
+
+function healthEnabled(){
+const checkbox=document.getElementById("healthEnabled")
+return checkbox ? checkbox.checked : true
+}
+
+function toggleHealthBox(){
+const enabled=healthEnabled()
+const box=document.getElementById("healthBox")
+if(box){
+box.classList.toggle("hidden",!enabled)
+}
+try{
+localStorage.setItem("health_enabled",enabled ? "1" : "0")
+}catch{
+}
+}
+
+function initHealthToggle(){
+const checkbox=document.getElementById("healthEnabled")
+if(!checkbox) return
+checkbox.checked=false
+try{
+localStorage.setItem("health_enabled","0")
+}catch{
+}
+toggleHealthBox()
+}
+
+function renderHealthModelSelector(){
+const target=document.getElementById("healthModelSelector")
+if(!target) return
+if(!availableModels || availableModels.length===0){
+target.innerHTML="<div class='health-empty'>No models available.</div>"
+return
+}
+target.innerHTML=availableModels.map((model)=>{
+return `
+<label class="health-select-item">
+<input type="checkbox" class="health-model-check" value="${escapeHtml(model.id)}" checked>
+<span>${escapeHtml(model.id)}</span>
+</label>
+`
+}).join("")
+}
+
+function selectedHealthModels(){
+return [...document.querySelectorAll(".health-model-check:checked")].map((el)=>el.value)
+}
+
+function renderModelHealth(data){
+const target=document.getElementById("modelHealth")
+if(!target) return
+const rows=(data&&data.results)||[]
+if(rows.length===0){
+target.innerHTML="<div class='health-empty'>No configured models.</div>"
+return
+}
+target.innerHTML=rows.map((item)=>{
+const ok=item.status==="working"
+return `
+<div class="health-row">
+<span class="health-model">${escapeHtml(item.model)}</span>
+<span class="health-badge ${ok ? "ok" : "fail"}">${ok ? "working" : "failing"}</span>
+<div class="health-detail">${escapeHtml(healthDetailText(item))}</div>
+</div>
+`
+}).join("")
+}
+
+async function loadModelHealth(force=false){
+if(!healthEnabled()) return
+const target=document.getElementById("modelHealth")
+const btn=document.getElementById("healthCheckBtn")
+if(target && force){
+target.innerHTML="<div class='health-loading'>Checking health<span class='dots'><span></span><span></span><span></span></span></div>"
+}
+const models=selectedHealthModels()
+if(models.length===0){
+if(target) target.innerHTML="<div class='health-empty'>Select at least one model.</div>"
+return
+}
+if(btn) btn.disabled=true
+try{
+const res=await fetch("/health/models",{
+method:"POST",
+headers:{"Content-Type":"application/json"},
+body:JSON.stringify({models})
+})
+if(!res.ok){
+throw new Error(`Health check failed: ${res.status}`)
+}
+const data=await res.json()
+renderModelHealth(data)
+}catch(err){
+if(target){
+target.innerHTML=`<div class='health-empty'>Health check failed: ${escapeHtml(err.message)}</div>`
+}
+}finally{
+if(btn) btn.disabled=false
+}
+}
+
+function checkSelectedHealth(){
+loadModelHealth(true)
 }
 
 async function loadDocuments(){
@@ -263,6 +383,7 @@ buttons.forEach((btn)=>{btn.disabled=isLoading})
 if(isLoading){
 output.textContent=message||"Fetching information from backend..."
 }
+setRequestStatus(isLoading,message)
 }
 
 async function runBacTool(){
@@ -274,10 +395,12 @@ const attachedFiles=currentAttachedFiles()
 
 if(!msg){
 output.textContent="Please enter a message first."
+setOutputVisibility(true)
 return
 }
 
-setLoadingState(true,output,"Fetching information from backend...")
+setOutputVisibility(false)
+setLoadingState(true,output,"Contacting selected model")
 
 try{
 const fileIds=await uploadFilesForPrompt(attachedFiles)
@@ -318,14 +441,17 @@ ${typeof data.rag_hits==="number" ? `\n\n[Grounded with ${data.rag_hits} documen
 </tbody>
 </table>
 `
+setOutputVisibility(true)
 if(fileInput){
 fileInput.value=""
 renderFileChips()
 }
 }catch(err){
 output.textContent=`BAC_TOOL failed: ${err.message}`
+setOutputVisibility(true)
 }finally{
 setLoadingState(false,output)
+resetUploadStatus()
 }
 }
 
@@ -338,15 +464,18 @@ const attachedFiles=currentAttachedFiles()
 
 if(!msg){
 output.textContent="Please enter a message first."
+setOutputVisibility(true)
 return
 }
 
 if(models.length===0){
 output.textContent="Please select at least one model for compare."
+setOutputVisibility(true)
 return
 }
 
-setLoadingState(true,output,"Fetching responses from multiple models...")
+setOutputVisibility(false)
+setLoadingState(true,output,"Contacting selected models")
 
 try{
 const fileIds=await uploadFilesForPrompt(attachedFiles)
@@ -373,26 +502,44 @@ throw new Error(data.error||`Request failed with status ${res.status}.`)
 }
 
 output.innerHTML=renderCompareTable(data)
+setOutputVisibility(true)
 if(fileInput){
 fileInput.value=""
 renderFileChips()
 }
 }catch(err){
 output.textContent=`Compare failed: ${err.message}`
+setOutputVisibility(true)
 }finally{
 setLoadingState(false,output)
+resetUploadStatus()
 }
 }
 
 loadModels()
 loadDocuments()
+initHealthToggle()
+toggleRunMode()
 applyModeVisibility()
+setOutputVisibility(false)
 renderFileChips()
 renderModeSummary()
 
 const fileInput=document.getElementById("file")
 if(fileInput){
-fileInput.addEventListener("change",renderFileChips)
+fileInput.addEventListener("change",()=>{
+renderFileChips()
+hideToolsMenu()
+const status=document.getElementById("uploadStatus")
+const files=currentAttachedFiles()
+if(status){
+if(files.length===0){
+status.textContent="No files selected."
+}else{
+status.textContent=`Selected ${files.length} file(s). Click Send to upload and run.`
+}
+}
+})
 }
 
 const singleModelSelect=document.getElementById("bacToolModel")
@@ -415,8 +562,6 @@ if(!inMenu && !inBtn) toolsMenu.classList.add("hidden")
 }
 
 })
-
-window.closeMultiModelModal=closeMultiModelModal
 
 const msgInput=document.getElementById("msg")
 if(msgInput){

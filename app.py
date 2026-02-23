@@ -9,31 +9,54 @@ Feb 21, 2026
 
 from flask import Flask, render_template, request, jsonify
 import os
+import time
+import mimetypes
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from werkzeug.exceptions import HTTPException
 
 from config import *
 from llm.gemini_client import gemini_bac_tool
-from llm.groq_client import groq_bac_tool
+# from llm.groq_client import groq_bac_tool
+# from llm.claude_client import claude_bac_tool
+from llm.cloudflare_client import cloudflare_bac_tool
 from llm.openrouter_client import openrouter_bac_tool
 from llm.ollama_cloud_client import ollama_cloud_bac_tool
 
 from memory.memory_store import save_message, save_message_and_get_memory
-from memory.document_index import index_file as index_document_file, search_index, list_documents
+from memory.document_index import index_file as index_document_file, search_index, list_documents, get_documents_by_ids
 
 
 app = Flask(__name__)
 
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
+GEMINI_NATIVE_ALLOWED_EXTENSIONS = {
+    ".pdf",
+    ".txt",
+    ".md",
+    ".csv",
+    ".json",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".webp",
+    ".gif",
+}
 MODEL_CATALOG = [
+    # {"id": "claude-3-5-haiku-latest", "provider": "claude", "type": "remote", "key_name": "ANTHROPIC_API_KEY"},
+    # {"id": "claude-3-5-sonnet-latest", "provider": "claude", "type": "remote", "key_name": "ANTHROPIC_API_KEY"},
+    {"id": "@cf/meta/llama-3.1-8b-instruct", "provider": "cloudflare", "type": "remote", "key_name": "CLOUDFLARE_API_TOKEN"},
+    {"id": "@cf/openai/gpt-oss-20b", "provider": "cloudflare", "type": "remote", "key_name": "CLOUDFLARE_API_TOKEN"},
+    {"id": "@cf/openai/gpt-oss-120b", "provider": "cloudflare", "type": "remote", "key_name": "CLOUDFLARE_API_TOKEN"},
+    {"id": "gemini-3-flash-preview", "provider": "gemini", "type": "remote", "key_name": "GEMINI_API_KEY"},
     {"id": "gemini-2.0-flash", "provider": "gemini", "type": "remote", "key_name": "GEMINI_API_KEY"},
     {"id": "gemini-2.0-flash-lite", "provider": "gemini", "type": "remote", "key_name": "GEMINI_API_KEY"},
-    {"id": "llama-3.1-8b-instant", "provider": "groq", "type": "remote", "key_name": "GROQ_API_KEY"},
-    {"id": "llama-3.3-70b-versatile", "provider": "groq", "type": "remote", "key_name": "GROQ_API_KEY"},
-    {"id": "gemma2-9b-it", "provider": "groq", "type": "remote", "key_name": "GROQ_API_KEY"},
-    {"id": "openai/gpt-oss-20b", "provider": "groq", "type": "remote", "key_name": "GROQ_API_KEY"},
-    {"id": "openai/gpt-oss-120b", "provider": "groq", "type": "remote", "key_name": "GROQ_API_KEY"},
+    # {"id": "llama-3.1-8b-instant", "provider": "groq", "type": "remote", "key_name": "GROQ_API_KEY"},
+    # {"id": "llama-3.3-70b-versatile", "provider": "groq", "type": "remote", "key_name": "GROQ_API_KEY"},
+    # {"id": "gemma2-9b-it", "provider": "groq", "type": "remote", "key_name": "GROQ_API_KEY"},
+    # {"id": "openai/gpt-oss-20b", "provider": "groq", "type": "remote", "key_name": "GROQ_API_KEY"},
+    # {"id": "openai/gpt-oss-120b", "provider": "groq", "type": "remote", "key_name": "GROQ_API_KEY"},
     {"id": "openai/gpt-oss-20b:free", "provider": "openrouter", "type": "remote", "key_name": "OPENROUTER_API_KEY"},
     {"id": "gpt-oss:20b", "provider": "ollama_cloud", "type": "remote", "key_name": "OLLAMA_API_KEY"},
     {"id": "gpt-oss:120b", "provider": "ollama_cloud", "type": "remote", "key_name": "OLLAMA_API_KEY"},
@@ -70,13 +93,103 @@ def with_rag_context(messages, file_ids=None):
         )
 
     grounding = (
-        "Use the document snippets below only when relevant. "
-        "If you use them, cite the snippet tag like [doc:file#chunk]. "
-        "If snippets are insufficient, say what is missing.\n\n"
+        "The text snippets below are REAL extracted contents from the user's uploaded files. "
+        "Treat them as available context in this chat. "
+        "Do NOT say you cannot access or view files when snippets are provided. "
+        "Use snippets when relevant, and cite snippet tags like [doc:file#chunk]. "
+        "If snippets are insufficient, say exactly what additional content is needed.\n\n"
         + "\n\n".join(snippets)
     )
-    enhanced = [{"role": "system", "content": grounding}] + list(messages)
+    attachment_user_hint = (
+        "Attached file context is already extracted below. "
+        "Answer the user's latest request using this context; do not ask for re-upload when snippet(s) are present.\n\n"
+        + "\n\n".join(snippets)
+    )
+    enhanced = (
+        [{"role": "system", "content": grounding}]
+        + list(messages)
+        + [{"role": "user", "content": attachment_user_hint}]
+    )
     return enhanced, hits
+
+
+def _looks_like_missing_attachment_reply(text):
+    t = (text or "").lower()
+    if not t:
+        return False
+    patterns = (
+        "don't see any file attached",
+        "do not see any file attached",
+        "i don't see any file",
+        "i do not see any file",
+        "upload the document",
+        "share a link",
+        "can't access files directly",
+        "cannot access files directly",
+        "can't open files directly",
+        "cannot open files directly",
+        "can't view files directly",
+        "cannot view files directly",
+    )
+    return any(p in t for p in patterns)
+
+
+def _guess_mime_type(path):
+    mime_type, _ = mimetypes.guess_type(path)
+    if mime_type:
+        return mime_type
+    ext = os.path.splitext(path)[1].lower()
+    if ext in {".md", ".txt"}:
+        return "text/plain"
+    if ext == ".csv":
+        return "text/csv"
+    if ext == ".json":
+        return "application/json"
+    return "application/octet-stream"
+
+
+def resolve_gemini_native_attachments(file_ids):
+    if not GEMINI_NATIVE_FILES_ENABLED:
+        return []
+    if not file_ids:
+        return []
+
+    docs = get_documents_by_ids(RAG_INDEX_FILE, file_ids)
+    if not docs:
+        return []
+
+    attachments = []
+    for doc in docs:
+        if len(attachments) >= max(1, GEMINI_NATIVE_MAX_FILES):
+            break
+        path = (doc.get("path") or "").strip()
+        if not path or not os.path.exists(path):
+            continue
+        ext = os.path.splitext(path)[1].lower()
+        if ext not in GEMINI_NATIVE_ALLOWED_EXTENSIONS:
+            bac_log(f"BAC: skipping native Gemini attachment (unsupported ext): {doc.get('name')}")
+            continue
+        size = os.path.getsize(path)
+        if size > max(1024, GEMINI_NATIVE_MAX_FILE_BYTES):
+            bac_log(f"BAC: skipping native Gemini attachment (too large): {doc.get('name')} ({size} bytes)")
+            continue
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+        except OSError as exc:
+            bac_log(f"BAC: failed to read attachment {path}: {exc}")
+            continue
+        if not data:
+            continue
+        attachments.append({
+            "name": doc.get("name") or os.path.basename(path),
+            "mime_type": _guess_mime_type(path),
+            "data": data,
+        })
+
+    if attachments:
+        bac_log(f"BAC: resolved {len(attachments)} Gemini native attachment(s)")
+    return attachments
 
 
 @app.after_request
@@ -95,6 +208,11 @@ def handle_value_error(error):
         "Gemini HTTP",
         "Gemini request failed",
         "Gemini returned",
+        "Claude request failed",
+        "Claude returned",
+        "Cloudflare HTTP",
+        "Cloudflare request failed",
+        "Cloudflare returned",
         "Groq HTTP",
         "Groq request failed",
         "Groq returned",
@@ -168,7 +286,7 @@ def bac_tool():
 
     enabled_models = available_models()
     if not enabled_models:
-        return jsonify({"error": "No remote models are configured. Set GEMINI_API_KEY, GROQ_API_KEY, or OPENROUTER_API_KEY in .env."}), 400
+        return jsonify({"error": "No remote models are configured. Set CLOUDFLARE_API_TOKEN+CLOUDFLARE_ACCOUNT_ID, GEMINI_API_KEY, OPENROUTER_API_KEY, or OLLAMA_API_KEY in .env."}), 400
 
     if model not in enabled_models:
         return jsonify({"error": f"Unsupported model: {model}"}), 400
@@ -179,7 +297,18 @@ def bac_tool():
     model_messages, rag_hits = with_rag_context(memory, file_ids=file_ids)
     bac_log(f"BAC: /bac_tool rag hits = {len(rag_hits)}")
 
-    response = run_model(model, model_messages, use_fallback=use_fallback)
+    native_attachments = resolve_gemini_native_attachments(file_ids) if model.startswith("gemini") else []
+    response = run_model(model, model_messages, use_fallback=use_fallback, attachments=native_attachments)
+    if rag_hits and _looks_like_missing_attachment_reply(response):
+        bac_log("BAC: /bac_tool retrying once with stronger attached-file instruction")
+        retry_messages = list(model_messages) + [{
+            "role": "user",
+            "content": (
+                "You already have extracted snippets from uploaded files in this chat context. "
+                "Do not ask for re-upload. Answer now using those snippets and cite [doc:file#chunk]."
+            ),
+        }]
+        response = run_model(model, retry_messages, use_fallback=use_fallback, attachments=native_attachments)
     bac_log(f"BAC: /bac_tool response length = {len(response) if response else 0}")
 
     save_message(model, "assistant", response)
@@ -190,6 +319,7 @@ def bac_tool():
         "response": response,
         "rag_hits": len(rag_hits),
         "attached_files": len(file_ids),
+        "native_attachments": len(native_attachments),
     })
 
 
@@ -227,18 +357,25 @@ def compare():
 
     valid_models = set(available_models())
     if not valid_models:
-        return jsonify({"error": "No remote models are configured. Set GEMINI_API_KEY, GROQ_API_KEY, or OPENROUTER_API_KEY in .env."}), 400
+        return jsonify({"error": "No remote models are configured. Set CLOUDFLARE_API_TOKEN+CLOUDFLARE_ACCOUNT_ID, GEMINI_API_KEY, OPENROUTER_API_KEY, or OLLAMA_API_KEY in .env."}), 400
     invalid_models = [model for model in models if model not in valid_models]
     if invalid_models:
         return jsonify({"error": f"Unsupported model(s): {', '.join(invalid_models)}"}), 400
 
+    gemini_native_attachments = resolve_gemini_native_attachments(file_ids) if any(m.startswith("gemini") for m in models) else []
     result = {}
     workers = max(1, min(len(models), COMPARE_MAX_WORKERS))
 
     if workers == 1:
         for model in models:
             try:
-                result[model] = compare_one_model(model, message, use_fallback=use_fallback, file_ids=file_ids)
+                result[model] = compare_one_model(
+                    model,
+                    message,
+                    use_fallback=use_fallback,
+                    file_ids=file_ids,
+                    native_attachments=gemini_native_attachments,
+                )
                 bac_log(f"BAC: /compare completed model {model}")
             except Exception as exc:
                 bac_log(f"BAC: /compare error for model {model}: {exc}")
@@ -246,7 +383,7 @@ def compare():
     else:
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {
-                executor.submit(compare_one_model, model, message, use_fallback, file_ids): model
+                executor.submit(compare_one_model, model, message, use_fallback, file_ids, gemini_native_attachments): model
                 for model in models
             }
 
@@ -286,29 +423,14 @@ def upload():
     file.save(path)
     bac_log(f"BAC: /upload saved file to {path}")
 
-    ext = os.path.splitext(file.filename or "")[1].lower()
-    image_exts = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
-    if ext in image_exts:
-        doc_record = {
-            "file_id": "",
-            "name": file.filename,
-            "path": path,
-            "size_bytes": os.path.getsize(path) if os.path.exists(path) else 0,
-            "chunk_count": 0,
-            "kind": "image",
-            "note": "Image uploaded. Image grounding is not enabled yet for this route.",
-        }
-        bac_log(f"BAC: /upload stored image file {doc_record['name']}")
-    else:
-        doc_record = index_document_file(
-            path,
-            index_file=RAG_INDEX_FILE,
-            vector_dims=RAG_VECTOR_DIMS,
-            chunk_size=RAG_CHUNK_SIZE,
-            chunk_overlap=RAG_CHUNK_OVERLAP,
-        )
-        doc_record["kind"] = "document"
-        bac_log(f"BAC: /upload indexed file {doc_record['name']} chunks={doc_record['chunk_count']}")
+    doc_record = index_document_file(
+        path,
+        index_file=RAG_INDEX_FILE,
+        vector_dims=RAG_VECTOR_DIMS,
+        chunk_size=RAG_CHUNK_SIZE,
+        chunk_overlap=RAG_CHUNK_OVERLAP,
+    )
+    bac_log(f"BAC: /upload indexed file {doc_record['name']} kind={doc_record.get('kind')} chunks={doc_record['chunk_count']}")
     bac_log("BAC: POST /upload completed")
 
     return jsonify({"status": "ok", "document": doc_record})
@@ -327,14 +449,22 @@ def documents():
 # MODEL ROUTER
 # -------------------------
 
-def run_model(model, messages, use_fallback=True):
+def run_model(model, messages, use_fallback=True, attachments=None):
     bac_log(f"BAC: run_model called with model = {model}, messages = {len(messages)}")
+    if model.startswith("@cf/"):
+        bac_log("BAC: run_model routing to Cloudflare")
+        return cloudflare_bac_tool(model, messages)
+
+    # if model.startswith("claude-"):
+    #     bac_log("BAC: run_model routing to Claude")
+    #     return claude_bac_tool(model, messages)
+
     if model.startswith("gemini"):
         bac_log("BAC: run_model routing to Gemini")
         if not use_fallback:
-            return gemini_bac_tool(model, messages)
+            return gemini_bac_tool(model, messages, attachments=attachments)
         try:
-            return gemini_bac_tool(model, messages)
+            return gemini_bac_tool(model, messages, attachments=attachments)
         except ValueError as exc:
             error_text = str(exc)
             should_fallback = (
@@ -346,59 +476,59 @@ def run_model(model, messages, use_fallback=True):
                 fallback_model = "gemini-2.0-flash-lite"
                 bac_log(f"BAC: fallback from {model} to {fallback_model} after quota/rate error")
                 try:
-                    return gemini_bac_tool(fallback_model, messages)
+                    return gemini_bac_tool(fallback_model, messages, attachments=attachments)
                 except ValueError:
-                    if GROQ_API_KEY:
-                        groq_fallback = "llama-3.1-8b-instant"
-                        bac_log(f"BAC: fallback from Gemini to Groq model {groq_fallback}")
-                        try:
-                            return groq_bac_tool(groq_fallback, messages)
-                        except ValueError:
-                            if OPENROUTER_API_KEY:
-                                or_fallback = "openai/gpt-oss-20b:free"
-                                bac_log(f"BAC: fallback from Groq to OpenRouter model {or_fallback}")
-                                return openrouter_bac_tool(or_fallback, messages)
-                            raise
+                    # if GROQ_API_KEY:
+                    #     groq_fallback = "llama-3.1-8b-instant"
+                    #     bac_log(f"BAC: fallback from Gemini to Groq model {groq_fallback}")
+                    #     try:
+                    #         return groq_bac_tool(groq_fallback, messages)
+                    #     except ValueError:
+                    #         if OPENROUTER_API_KEY:
+                    #             or_fallback = "openai/gpt-oss-20b:free"
+                    #             bac_log(f"BAC: fallback from Groq to OpenRouter model {or_fallback}")
+                    #             return openrouter_bac_tool(or_fallback, messages)
+                    #         raise
                     if OPENROUTER_API_KEY:
                         or_fallback = "openai/gpt-oss-20b:free"
                         bac_log(f"BAC: fallback from Gemini to OpenRouter model {or_fallback}")
                         return openrouter_bac_tool(or_fallback, messages)
                     raise
-            if "HTTP 429" in error_text and "RESOURCE_EXHAUSTED" in error_text and GROQ_API_KEY:
-                groq_fallback = "llama-3.1-8b-instant"
-                bac_log(f"BAC: fallback from Gemini to Groq model {groq_fallback}")
-                try:
-                    return groq_bac_tool(groq_fallback, messages)
-                except ValueError:
-                    if OPENROUTER_API_KEY:
-                        or_fallback = "openai/gpt-oss-20b:free"
-                        bac_log(f"BAC: fallback from Groq to OpenRouter model {or_fallback}")
-                        return openrouter_bac_tool(or_fallback, messages)
-                    raise
+            # if "HTTP 429" in error_text and "RESOURCE_EXHAUSTED" in error_text and GROQ_API_KEY:
+            #     groq_fallback = "llama-3.1-8b-instant"
+            #     bac_log(f"BAC: fallback from Gemini to Groq model {groq_fallback}")
+            #     try:
+            #         return groq_bac_tool(groq_fallback, messages)
+            #     except ValueError:
+            #         if OPENROUTER_API_KEY:
+            #             or_fallback = "openai/gpt-oss-20b:free"
+            #             bac_log(f"BAC: fallback from Groq to OpenRouter model {or_fallback}")
+            #             return openrouter_bac_tool(or_fallback, messages)
+            #         raise
             if "HTTP 429" in error_text and "RESOURCE_EXHAUSTED" in error_text and OPENROUTER_API_KEY:
                 or_fallback = "openai/gpt-oss-20b:free"
                 bac_log(f"BAC: fallback from Gemini to OpenRouter model {or_fallback}")
                 return openrouter_bac_tool(or_fallback, messages)
             raise
 
-    elif model in {
-        "llama-3.1-8b-instant",
-        "llama-3.3-70b-versatile",
-        "gemma2-9b-it",
-        "openai/gpt-oss-20b",
-        "openai/gpt-oss-120b",
-    }:
-        bac_log("BAC: run_model routing to Groq")
-        if not use_fallback:
-            return groq_bac_tool(model, messages)
-        try:
-            return groq_bac_tool(model, messages)
-        except ValueError:
-            if OPENROUTER_API_KEY:
-                or_fallback = "openai/gpt-oss-20b:free"
-                bac_log(f"BAC: fallback from Groq to OpenRouter model {or_fallback}")
-                return openrouter_bac_tool(or_fallback, messages)
-            raise
+    # elif model in {
+    #     "llama-3.1-8b-instant",
+    #     "llama-3.3-70b-versatile",
+    #     "gemma2-9b-it",
+    #     "openai/gpt-oss-20b",
+    #     "openai/gpt-oss-120b",
+    # }:
+    #     bac_log("BAC: run_model routing to Groq")
+    #     if not use_fallback:
+    #         return groq_bac_tool(model, messages)
+    #     try:
+    #         return groq_bac_tool(model, messages)
+    #     except ValueError:
+    #         if OPENROUTER_API_KEY:
+    #             or_fallback = "openai/gpt-oss-20b:free"
+    #             bac_log(f"BAC: fallback from Groq to OpenRouter model {or_fallback}")
+    #             return openrouter_bac_tool(or_fallback, messages)
+    #         raise
 
     elif model in {"openai/gpt-oss-20b:free"}:
         bac_log("BAC: run_model routing to OpenRouter")
@@ -412,13 +542,24 @@ def run_model(model, messages, use_fallback=True):
         raise ValueError(f"Unsupported model: {model}.")
 
 
-def compare_one_model(model, message, use_fallback=True, file_ids=None):
+def compare_one_model(model, message, use_fallback=True, file_ids=None, native_attachments=None):
     bac_log(f"BAC: /compare processing model {model}")
     memory = save_message_and_get_memory(model, "user", message, MAX_CONTEXT_MESSAGES)
     bac_log(f"BAC: /compare context size = {len(memory)} for model {model}")
     model_messages, rag_hits = with_rag_context(memory, file_ids=file_ids)
     bac_log(f"BAC: /compare rag hits = {len(rag_hits)} for model {model}")
-    answer = run_model(model, model_messages, use_fallback=use_fallback)
+    attachments = native_attachments if model.startswith("gemini") else None
+    answer = run_model(model, model_messages, use_fallback=use_fallback, attachments=attachments)
+    if rag_hits and _looks_like_missing_attachment_reply(answer):
+        bac_log(f"BAC: /compare retrying once for model {model} with stronger attached-file instruction")
+        retry_messages = list(model_messages) + [{
+            "role": "user",
+            "content": (
+                "You already have extracted snippets from uploaded files in this chat context. "
+                "Do not ask for re-upload. Answer now using those snippets and cite [doc:file#chunk]."
+            ),
+        }]
+        answer = run_model(model, retry_messages, use_fallback=use_fallback, attachments=attachments)
     save_message(model, "assistant", answer)
     return answer
 
@@ -426,10 +567,18 @@ def compare_one_model(model, message, use_fallback=True, file_ids=None):
 def available_models():
     models = []
     for item in MODEL_CATALOG:
+        if (
+            item["key_name"] == "CLOUDFLARE_API_TOKEN"
+            and CLOUDFLARE_API_TOKEN
+            and CLOUDFLARE_ACCOUNT_ID
+        ):
+            models.append(item["id"])
+        # if item["key_name"] == "ANTHROPIC_API_KEY" and ANTHROPIC_API_KEY:
+        #     models.append(item["id"])
         if item["key_name"] == "GEMINI_API_KEY" and GEMINI_API_KEY:
             models.append(item["id"])
-        if item["key_name"] == "GROQ_API_KEY" and GROQ_API_KEY:
-            models.append(item["id"])
+        # if item["key_name"] == "GROQ_API_KEY" and GROQ_API_KEY:
+        #     models.append(item["id"])
         if item["key_name"] == "OPENROUTER_API_KEY" and OPENROUTER_API_KEY:
             models.append(item["id"])
         if item["key_name"] == "OLLAMA_API_KEY" and OLLAMA_API_KEY:
@@ -437,11 +586,83 @@ def available_models():
     return models
 
 
+def check_model_health(model):
+    start = time.time()
+    probe_messages = [{"role": "user", "content": "Reply with exactly: OK"}]
+    try:
+        output = run_model(model, probe_messages, use_fallback=False)
+        text = (output or "").strip()
+        if not text:
+            return {
+                "model": model,
+                "status": "failing",
+                "detail": "Empty response",
+                "seconds": round(time.time() - start, 2),
+            }
+        return {
+            "model": model,
+            "status": "working",
+            "detail": text[:120],
+            "seconds": round(time.time() - start, 2),
+        }
+    except Exception as exc:
+        return {
+            "model": model,
+            "status": "failing",
+            "detail": str(exc)[:220],
+            "seconds": round(time.time() - start, 2),
+        }
+
+
+@app.route("/health/models", methods=["GET", "POST"])
+def health_models():
+    models = available_models()
+    if request.method == "POST":
+        payload = request.json or {}
+        requested = payload.get("models", [])
+        if requested is not None and not isinstance(requested, list):
+            return jsonify({"error": "models must be a list"}), 400
+        requested = [str(item).strip() for item in (requested or []) if str(item).strip()]
+        if requested:
+            allowed = set(models)
+            models = [m for m in requested if m in allowed]
+
+    checked_at = datetime.now(timezone.utc).isoformat()
+    if not models:
+        return jsonify({
+            "checked_at": checked_at,
+            "count": 0,
+            "results": [],
+        })
+
+    results = []
+    workers = max(1, min(len(models), COMPARE_MAX_WORKERS))
+    if workers == 1:
+        for model in models:
+            results.append(check_model_health(model))
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {executor.submit(check_model_health, model): model for model in models}
+            for future in as_completed(futures):
+                results.append(future.result())
+
+    results.sort(key=lambda item: item["model"])
+    return jsonify({
+        "checked_at": checked_at,
+        "count": len(results),
+        "results": results,
+    })
+
+
 def choose_default_model(enabled_models):
     if not enabled_models:
         return ""
-    if "llama-3.1-8b-instant" in enabled_models:
-        return "llama-3.1-8b-instant"
+    # if "claude-3-5-haiku-latest" in enabled_models:
+    #     return "claude-3-5-haiku-latest"
+    # if "llama-3.1-8b-instant" in enabled_models:
+    #     return "llama-3.1-8b-instant"
+    if "gpt-oss:20b" in enabled_models:
+        return "gpt-oss:20b"
     if "openai/gpt-oss-20b:free" in enabled_models:
         return "openai/gpt-oss-20b:free"
     return enabled_models[0]

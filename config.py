@@ -1,14 +1,15 @@
 import os
 from dotenv import load_dotenv
 
-
 load_dotenv()
-
 
 OLLAMA_DEFAULT_MODEL = os.getenv("OLLAMA_DEFAULT_MODEL", "phi3")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", os.getenv("GOOGLE_API_KEY", ""))
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+CLOUDFLARE_API_TOKEN = os.getenv("CLOUDFLARE_API_TOKEN", "")
+CLOUDFLARE_ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID", "")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", "")
 OLLAMA_CLOUD_BASE_URL = os.getenv("OLLAMA_CLOUD_BASE_URL", "https://ollama.com")
@@ -27,3 +28,6 @@ RAG_VECTOR_DIMS = int(os.getenv("RAG_VECTOR_DIMS", "192"))
 RAG_MAX_SNIPPET_CHARS = int(os.getenv("RAG_MAX_SNIPPET_CHARS", "800"))
 ENABLE_BAC_LOGS = os.getenv("ENABLE_BAC_LOGS", "false").lower() == "true"
 APP_DEBUG = os.getenv("APP_DEBUG", "false").lower() == "true"
+GEMINI_NATIVE_FILES_ENABLED = os.getenv("GEMINI_NATIVE_FILES_ENABLED", "true").lower() == "true"
+GEMINI_NATIVE_MAX_FILES = int(os.getenv("GEMINI_NATIVE_MAX_FILES", "4"))
+GEMINI_NATIVE_MAX_FILE_BYTES = int(os.getenv("GEMINI_NATIVE_MAX_FILE_BYTES", str(5 * 1024 * 1024)))

@@ -20,32 +20,42 @@
 <div id="uploadStatus" class="upload-status">Optional: choose files/images from the + menu, then send.</div>
 <div id="documentsInfo" class="documents-info"></div>
 </div>
+<div class="rail-card">
+<div class="rail-label">Model Health</div>
+<label class="health-toggle switch">
+<input type="checkbox" id="healthEnabled" onchange="toggleHealthBox()">
+<span class="slider"></span>
+<span class="switch-text">Enable model health</span>
+</label>
+<div id="healthBox">
+<div id="healthModelSelector" class="health-selector">Model list unavailable.</div>
+<button type="button" id="healthCheckBtn" class="health-btn" onclick="checkSelectedHealth()">Check health</button>
+<div id="modelHealth" class="health-list"><div class="health-empty">No checks run yet.</div></div>
+</div>
+</div>
 </aside>
 
 <section class="workspace">
-<div class="output-wrap">
-<div class="section-title">Output</div>
-<div id="output" class="output-area"></div>
-</div>
-
 <div class="composer">
 <label for="msg" class="field-label">Prompt</label>
 <textarea id="msg" rows="4" placeholder="Ask something about your attached files..."></textarea>
 
-<input type="file" id="file" accept=".txt,.md,.pdf,.png,.jpg,.jpeg,.webp,.gif" multiple>
+<input type="file" id="file" accept=".txt,.md,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.csv,.json,.png,.jpg,.jpeg,.webp,.gif" multiple>
 
 <div class="composer-controls">
 <div class="left-controls">
 <button type="button" id="toolsBtn" class="tools-btn" onclick="toggleToolsMenu()">+</button>
 <div id="toolsMenu" class="tools-menu hidden">
-<button type="button" onclick="onSelectAddFiles()">Add files or images</button>
+<label for="file" class="tools-file-label">Add files or images</label>
 </div>
 </div>
-<div class="mode-toggle" role="group" aria-label="Run mode">
-<button type="button" id="singleModeBtn" onclick="onSelectSingleMode()">Single</button>
-<button type="button" id="multipleModeBtn" onclick="onSelectMultipleMode()">Multiple</button>
-</div>
+<label class="health-toggle switch mode-switch">
+<input type="checkbox" id="modeMultipleEnabled" onchange="toggleRunMode()">
+<span class="slider"></span>
+<span class="switch-text">Multiple mode</span>
+</label>
 <div id="modeSummary" class="mode-summary">Single model</div>
+<div id="requestStatus" class="request-status hidden" aria-live="polite"></div>
 <button id="sendBtn" onclick="submitPrompt()">Send</button>
 </div>
 
@@ -54,24 +64,23 @@
 <label for="bacToolModel" class="field-label">Single model</label>
 <select id="bacToolModel"></select>
 </div>
+<div id="multipleModelPanel" class="floating-panel hidden">
+<label class="field-label">Multiple models</label>
+<div id="compareModels" class="models-panel"></div>
+</div>
 
 <label class="toggle-row">
 <input type="checkbox" id="useFallback" checked>
 <span>Use fallback</span>
 </label>
 </div>
+
+<div class="output-wrap hidden">
+<div class="section-title">Output</div>
+<div id="output" class="output-area"></div>
+</div>
 </section>
 </main>
-
-<div id="multiModelModal" class="modal-backdrop hidden">
-<div class="modal-card">
-<div class="modal-title">Select models for Multiple mode</div>
-<div id="compareModels" class="models-panel"></div>
-<div class="modal-actions">
-<button type="button" onclick="closeMultiModelModal()">Done</button>
-</div>
-</div>
-</div>
 
 <script src="/static/script.js"></script>
 

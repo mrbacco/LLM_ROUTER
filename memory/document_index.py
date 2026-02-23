@@ -61,13 +61,112 @@ def _safe_read_pdf(path):
     return "\n".join(parts)
 
 
+def _safe_read_docx(path):
+    try:
+        import docx
+    except ImportError as exc:
+        raise ValueError("DOCX parsing requires python-docx. Install with: pip install python-docx") from exc
+
+    document = docx.Document(path)
+    return "\n".join((p.text or "").strip() for p in document.paragraphs if (p.text or "").strip())
+
+
+def _safe_read_xlsx(path):
+    try:
+        from openpyxl import load_workbook
+    except ImportError as exc:
+        raise ValueError("XLSX parsing requires openpyxl. Install with: pip install openpyxl") from exc
+
+    wb = load_workbook(path, data_only=True, read_only=True)
+    parts = []
+    try:
+        for ws in wb.worksheets:
+            parts.append(f"# Sheet: {ws.title}")
+            for row in ws.iter_rows(values_only=True):
+                cells = [str(c).strip() for c in row if c is not None and str(c).strip()]
+                if cells:
+                    parts.append(" | ".join(cells))
+    finally:
+        wb.close()
+    return "\n".join(parts)
+
+
+def _safe_read_pptx(path):
+    try:
+        from pptx import Presentation
+    except ImportError as exc:
+        raise ValueError("PPTX parsing requires python-pptx. Install with: pip install python-pptx") from exc
+
+    presentation = Presentation(path)
+    parts = []
+    for slide_idx, slide in enumerate(presentation.slides, start=1):
+        parts.append(f"# Slide {slide_idx}")
+        for shape in slide.shapes:
+            text = (getattr(shape, "text", "") or "").strip()
+            if text:
+                parts.append(text)
+    return "\n".join(parts)
+
+
+def _safe_read_image(path):
+    try:
+        from PIL import Image
+        with Image.open(path) as img:
+            width, height = img.size
+            mode = img.mode
+            fmt = img.format or os.path.splitext(path)[1].replace(".", "").upper()
+    except Exception:
+        width, height, mode = "unknown", "unknown", "unknown"
+        fmt = os.path.splitext(path)[1].replace(".", "").upper() or "IMAGE"
+    filename = os.path.basename(path)
+    size = os.path.getsize(path) if os.path.exists(path) else 0
+    return (
+        f"[Image attachment]\n"
+        f"File: {filename}\n"
+        f"Size bytes: {size}\n"
+        f"Format: {fmt}\n"
+        f"Dimensions: {width}x{height}\n"
+        f"Color mode: {mode}\n"
+        f"Note: This context includes image metadata. OCR/vision extraction is not enabled in this step."
+    )
+
+
+def _binary_placeholder(path, label):
+    filename = os.path.basename(path)
+    size = os.path.getsize(path) if os.path.exists(path) else 0
+    return (
+        f"[{label} attachment]\n"
+        f"File: {filename}\n"
+        f"Size bytes: {size}\n"
+        f"Note: Legacy binary format attached. Deep text extraction not enabled for this format."
+    )
+
+
 def _parse_file(path):
     ext = os.path.splitext(path)[1].lower()
     if ext in {".txt", ".md", ".csv", ".json", ".py", ".js", ".html", ".css"}:
-        return _safe_read_text(path)
+        return _safe_read_text(path), "document"
     if ext == ".pdf":
-        return _safe_read_pdf(path)
-    raise ValueError(f"Unsupported file type: {ext}. Supported: .txt, .md, .pdf")
+        return _safe_read_pdf(path), "document"
+    if ext == ".docx":
+        return _safe_read_docx(path), "document"
+    if ext == ".xlsx":
+        return _safe_read_xlsx(path), "document"
+    if ext == ".pptx":
+        return _safe_read_pptx(path), "document"
+    if ext in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
+        return _safe_read_image(path), "image"
+    if ext == ".doc":
+        return _binary_placeholder(path, "DOC"), "document"
+    if ext == ".xls":
+        return _binary_placeholder(path, "XLS"), "document"
+    if ext == ".ppt":
+        return _binary_placeholder(path, "PPT"), "document"
+    raise ValueError(
+        "Unsupported file type: "
+        f"{ext}. Supported: .txt, .md, .pdf, .docx, .xlsx, .pptx, .doc, .xls, .ppt, "
+        ".png, .jpg, .jpeg, .webp, .gif"
+    )
 
 
 def _chunk_text(text, chunk_size=900, overlap=120):
@@ -113,7 +212,7 @@ def _save_index(index_file, data):
 
 def index_file(path, index_file, vector_dims=192, chunk_size=900, chunk_overlap=120):
     filename = os.path.basename(path)
-    text = _parse_file(path)
+    text, kind = _parse_file(path)
     chunks = _chunk_text(text, chunk_size=chunk_size, overlap=chunk_overlap)
     if not chunks:
         raise ValueError(f"No text could be extracted from {filename}.")
@@ -126,6 +225,7 @@ def index_file(path, index_file, vector_dims=192, chunk_size=900, chunk_overlap=
         "uploaded_at": _now_iso(),
         "size_bytes": os.path.getsize(path) if os.path.exists(path) else 0,
         "chunk_count": len(chunks),
+        "kind": kind,
     }
 
     with INDEX_LOCK:
@@ -147,8 +247,6 @@ def index_file(path, index_file, vector_dims=192, chunk_size=900, chunk_overlap=
 
 def search_index(query, index_file, top_k=4, vector_dims=192, file_ids=None):
     query = (query or "").strip()
-    if not query:
-        return []
 
     with INDEX_LOCK:
         data = _load_index(index_file)
@@ -157,17 +255,23 @@ def search_index(query, index_file, top_k=4, vector_dims=192, file_ids=None):
     if not chunks:
         return []
 
-    q_vec = _embed_text(query, dims=vector_dims)
-    scored = []
     file_ids_set = set(file_ids or [])
+    if not query and not file_ids_set:
+        return []
+
+    scored = []
+    q_vec = _embed_text(query, dims=vector_dims) if query else None
     for chunk in chunks:
         if file_ids_set and chunk.get("file_id") not in file_ids_set:
             continue
         vec = chunk.get("vector") or []
         if len(vec) != vector_dims:
             continue
-        score = _dot(q_vec, vec)
-        if score > 0.05:
+        if q_vec is None:
+            score = 0.0
+        else:
+            score = _dot(q_vec, vec)
+        if q_vec is None or score > 0.05:
             scored.append({
                 "score": score,
                 "file_id": chunk["file_id"],
@@ -175,6 +279,28 @@ def search_index(query, index_file, top_k=4, vector_dims=192, file_ids=None):
                 "chunk_index": chunk["chunk_index"],
                 "text": chunk["text"],
             })
+
+    if not scored and file_ids_set:
+        # Fallback: always include chunks from explicitly attached files.
+        fallback = []
+        seen_files = set()
+        for chunk in chunks:
+            if chunk.get("file_id") not in file_ids_set:
+                continue
+            fid = chunk.get("file_id")
+            if fid in seen_files:
+                continue
+            seen_files.add(fid)
+            fallback.append({
+                "score": 0.0,
+                "file_id": chunk["file_id"],
+                "file_name": chunk["file_name"],
+                "chunk_index": chunk["chunk_index"],
+                "text": chunk["text"],
+            })
+            if len(fallback) >= max(1, int(top_k)):
+                break
+        return fallback
 
     scored.sort(key=lambda item: item["score"], reverse=True)
     return scored[: max(1, int(top_k))]
@@ -185,3 +311,25 @@ def list_documents(index_file):
         data = _load_index(index_file)
     files = data.get("files", [])
     return sorted(files, key=lambda item: item.get("uploaded_at", ""), reverse=True)
+
+
+def get_documents_by_ids(index_file, file_ids):
+    ids = [str(item).strip() for item in (file_ids or []) if str(item).strip()]
+    if not ids:
+        return []
+
+    with INDEX_LOCK:
+        data = _load_index(index_file)
+        files = data.get("files", [])
+
+    by_id = {str(item.get("file_id")): item for item in files if item.get("file_id")}
+    ordered = []
+    seen = set()
+    for fid in ids:
+        if fid in seen:
+            continue
+        seen.add(fid)
+        item = by_id.get(fid)
+        if item:
+            ordered.append(item)
+    return ordered
