@@ -1,3 +1,12 @@
+/*
+GEN_AI_TOOL project
+Router and AI responses comparison tool done with flask
+
+mrbacco04@gmail.com
+Q2, 2026
+
+*/
+
 let availableModels = []
 let bacToolDefaultModel = "gemini-2.0-flash"
 let compareDefaultModels = ["gemini-2.0-flash", "gemini-2.0-flash-lite"]

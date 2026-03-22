@@ -3,7 +3,7 @@ GEN_AI_TOOL project
 Router and AI responses comparison tool done with flask
 
 mrbacco04@gmail.com
-Feb 21, 2026
+Q2, 2026
 
 """
 

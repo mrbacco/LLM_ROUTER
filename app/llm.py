@@ -1,16 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Spyder Editor
-
 GEN_AI_TOOL project
-mrbacco04@gmail.com
-Feb 20, 2026
+Router and AI responses comparison tool done with flask
 
-Multi-LLM Router
-Supports:
-- Ollama
-- OpenAI
-- Future providers (LM Studio, etc.)
+mrbacco04@gmail.com
+Q2, 2026
 
 """
 # -*- coding: utf-8 -*-

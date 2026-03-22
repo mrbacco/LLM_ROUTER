@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Spyder Editor
-
 GEN_AI_TOOL project
+Router and AI responses comparison tool done with flask
+
 mrbacco04@gmail.com
-Feb 20, 2026
+Q2, 2026
 
 """
 

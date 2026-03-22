@@ -1,16 +1,11 @@
 # -*- coding: utf-8 -*-
 """
 GEN_AI_TOOL project
-mrbacco04@gmail.com
-Feb 20, 2026
+Router and AI responses comparison tool done with flask
 
-Features:
-- True parallel LLM execution
-- Memory per model (limited context)
-- Fast streaming
-- Timeout protection
-- File upload support
-- Optimized performance
+mrbacco04@gmail.com
+Q2, 2026
+
 """
 
 from contextlib import asynccontextmanager

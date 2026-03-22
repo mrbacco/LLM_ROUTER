@@ -1,3 +1,12 @@
+<!--
+GEN_AI_TOOL project
+Router and AI responses comparison tool done with flask
+
+mrbacco04@gmail.com
+Q2, 2026
+
+-->
+
 # CREATE_WITH_AI (Flask)
 
 CREATE_WITH_AI is a Flask web app for:
@@ -43,11 +52,14 @@ Only models with configured keys are exposed in the UI.
 
 ## File analysis behavior
 
-- Text-like files are parsed and analyzed with local text statistics.
-- Images (.png, .jpg, .jpeg, .webp, .gif, .bmp, .tiff) are analyzed locally on the app server via Pillow-based heuristics.
+- File type routing uses MIME detection with Python mimetypes.
+- PDFs are extracted with PyMuPDF.
+- Images are OCR-processed with OpenCV preprocessing + pytesseract.
+- Videos (.mp4, .mov, .avi, .mkv, .webm) are processed with FFmpeg + Whisper transcription.
+- General documents are parsed with unstructured auto-partitioning.
+- Text summaries use transformers or LLM (Ollama) based on configuration.
 - Browser-side OCR is performed with Tesseract.js and sent to the backend as OCR hints during Read File Text analysis.
-- OCR text extraction is attempted locally with pytesseract (requires Tesseract OCR installed on the host OS).
-- Videos (.mp4, .mov, .avi, .mkv, .webm) are processed with an offline pipeline:
+- Videos are also processed with an offline pipeline for metadata:
   - FFmpeg extracts audio
   - Whisper transcribes speech
   - OpenCV extracts keyframes
@@ -100,7 +112,14 @@ Dependencies in requirements.txt:
 - flask
 - python-dotenv
 - ollama
-- pypdf
+- pymupdf
+- pytesseract
+- opencv-python
+- imageio-ffmpeg
+- openai-whisper
+- unstructured
+- transformers
+- torch
 
 ## Setup (Windows PowerShell)
 
@@ -171,6 +190,9 @@ RAG_CHUNK_SIZE=900
 RAG_CHUNK_OVERLAP=120
 RAG_VECTOR_DIMS=192
 RAG_MAX_SNIPPET_CHARS=800
+
+TEXT_SUMMARY_BACKEND="llm"      # llm | transformers | auto
+TRANSFORMERS_SUMMARY_MODEL="sshleifer/distilbart-cnn-12-6"
 ```
 
 ## Core API contracts

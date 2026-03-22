@@ -1,9 +1,11 @@
 .env
 venv/
+.venv/
 __pycache__/
 *.pyc
 .pytest_cache/
 .mypy_cache/
 uploads/
 data/rag_index.json
+data/*.db
 memory.json

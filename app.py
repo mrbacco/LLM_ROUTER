@@ -3,7 +3,7 @@ GEN_AI_TOOL project
 Router and AI responses comparison tool done with flask
 
 mrbacco04@gmail.com
-Feb 21, 2026
+Q2, 2026
 
 """
 
@@ -39,6 +39,7 @@ app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 VIDEO_DB_FILE = os.getenv("VIDEO_DB_FILE", os.path.join("data", "video_analysis.db"))
 VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
 _WHISPER_MODEL = None
+_TEXT_SUMMARIZER = None
 MODEL_CATALOG = [
     {"id": "gemini-2.0-flash", "provider": "gemini", "type": "remote", "key_name": "GEMINI_API_KEY"},
     {"id": "gemini-2.0-flash-lite", "provider": "gemini", "type": "remote", "key_name": "GEMINI_API_KEY"},
@@ -845,6 +846,55 @@ def analyze_text_content(text):
             "analytical_description": "No text could be extracted from this file.",
         }
 
+    def summarize_text(content):
+        global _TEXT_SUMMARIZER
+
+        backend = os.getenv("TEXT_SUMMARY_BACKEND", "llm").strip().lower()
+        model_name = os.getenv("TRANSFORMERS_SUMMARY_MODEL", "sshleifer/distilbart-cnn-12-6").strip()
+
+        snippet = content[:12000]
+        if backend in {"transformers", "auto"}:
+            try:
+                import importlib
+                transformers_module = importlib.import_module("transformers")
+                pipeline = transformers_module.pipeline
+
+                if _TEXT_SUMMARIZER is None:
+                    _TEXT_SUMMARIZER = pipeline("summarization", model=model_name)
+
+                max_len = min(180, max(60, len(snippet.split()) // 3))
+                result = _TEXT_SUMMARIZER(snippet, max_length=max_len, min_length=40, do_sample=False)
+                summary_text = ((result or [{}])[0].get("summary_text") or "").strip()
+                if summary_text:
+                    return summary_text, "transformers"
+            except Exception as exc:
+                bac_log(f"BAC: transformers summary fallback used: {exc}")
+
+        if backend in {"llm", "auto", "transformers"}:
+            try:
+                prompt = (
+                    "Summarize the following content in 6-10 concise bullet points and one final paragraph. "
+                    "Keep it factual and easy to scan.\n\n"
+                    f"Content:\n{snippet}"
+                )
+                response = ollama.chat(
+                    model=OLLAMA_DEFAULT_MODEL,
+                    messages=[
+                        {"role": "system", "content": "You create precise summaries from source documents."},
+                        {"role": "user", "content": prompt},
+                    ],
+                )
+                summary_text = ((response.get("message") or {}).get("content") or "").strip()
+                if summary_text:
+                    return summary_text, "llm"
+            except Exception as exc:
+                bac_log(f"BAC: llm summary fallback used: {exc}")
+
+        # Last-resort summary keeps API behavior deterministic if model backends are unavailable.
+        return content[:1000] + ("..." if len(content) > 1000 else ""), "heuristic"
+
+    summary_text, summary_source = summarize_text(text)
+
     words = re.findall(r"\w+", text.lower())
     word_count = len(words)
     unique_words = len(set(words))
@@ -869,7 +919,8 @@ def analyze_text_content(text):
         analytical_description += " Short content may be enriched with examples and context to produce fuller output."
 
     return {
-        "summary": text[:1000] + ("..." if len(text) > 1000 else ""),
+        "summary": summary_text,
+        "summary_source": summary_source,
         "char_count": len(text),
         "word_count": word_count,
         "sentence_count": len(sentences),

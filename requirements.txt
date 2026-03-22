@@ -1,9 +1,18 @@
+# GEN_AI_TOOL project
+# Router and AI responses comparison tool done with flask
+#
+# mrbacco04@gmail.com
+# Q2, 2026
+
 flask
 python-dotenv
 ollama
-pypdf
+pymupdf
 Pillow
 pytesseract
 openai-whisper
 opencv-python
 imageio-ffmpeg
+unstructured
+transformers
+torch

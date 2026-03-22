@@ -1,18 +1,30 @@
 """
-Local document indexing and retrieval for grounded prompting.
+GEN_AI_TOOL project
+Router and AI responses comparison tool done with flask
+
+mrbacco04@gmail.com
+Q2, 2026
+
 """
+
+"""Local document indexing and retrieval for grounded prompting."""
 
 import hashlib
 import json
 import math
+import mimetypes
 import os
 import re
+import shutil
+import subprocess
+import tempfile
 import threading
 import uuid
 from datetime import datetime, timezone
 
 INDEX_LOCK = threading.RLock()
 TOKEN_RE = re.compile(r"[A-Za-z0-9_]{2,}")
+_WHISPER_MODEL = None
 
 
 def _now_iso():
@@ -48,18 +60,17 @@ def _safe_read_text(path):
 
 def _safe_read_pdf(path):
     try:
-        from pypdf import PdfReader
+        import fitz
     except ImportError:
-        # Graceful degradation if pypdf not installed
         return ""
 
     try:
-        reader = PdfReader(path)
         parts = []
-        for page in reader.pages:
-            page_text = page.extract_text() or ""
-            if page_text:
-                parts.append(page_text)
+        with fitz.open(path) as doc:
+            for page in doc:
+                page_text = page.get_text("text") or ""
+                if page_text:
+                    parts.append(page_text)
         return "\n".join(parts)
     except Exception:
         return ""
@@ -68,7 +79,7 @@ def _safe_read_pdf(path):
 
 def _safe_read_image(path):
     try:
-        from PIL import Image
+        import cv2
     except ImportError:
         return ""
     try:
@@ -77,8 +88,13 @@ def _safe_read_image(path):
         return ""
 
     try:
-        with Image.open(path) as img:
-            text = pytesseract.image_to_string(img)
+        image = cv2.imread(path)
+        if image is None:
+            return ""
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        denoised = cv2.GaussianBlur(gray, (3, 3), 0)
+        _, thresh = cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        text = pytesseract.image_to_string(thresh)
         return text
     except Exception:
         return ""
@@ -118,64 +134,119 @@ def _safe_read_docx(path):
 
 
 def _safe_read_video(path):
+    global _WHISPER_MODEL
+
     try:
-        from moviepy.editor import VideoFileClip
+        import whisper
     except ImportError:
         return ""
 
-    clip = None
+    ffmpeg_exe = os.getenv("FFMPEG_PATH", "").strip() or shutil.which("ffmpeg")
+    if not ffmpeg_exe:
+        try:
+            import imageio_ffmpeg
+            ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+        except Exception:
+            ffmpeg_exe = ""
+
+    if not ffmpeg_exe:
+        return ""
+
+    tmp_wav = None
     try:
-        clip = VideoFileClip(path)
-        audio = clip.audio
-        if audio is None:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            tmp_wav = tmp.name
+
+        cmd = [
+            ffmpeg_exe,
+            "-y",
+            "-i",
+            path,
+            "-vn",
+            "-acodec",
+            "pcm_s16le",
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            tmp_wav,
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
             return ""
 
-        import tempfile
-        tmp_wav = None
-        try:
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-                tmp_wav = tmp.name
-            audio.write_audiofile(tmp_wav, verbose=False, logger=None)
+        if _WHISPER_MODEL is None:
+            _WHISPER_MODEL = whisper.load_model("base")
 
-            try:
-                import whisper
-            except ImportError:
-                return ""
-
-            model = whisper.load_model("small")
-            result = model.transcribe(tmp_wav)
-            return result.get("text", "")
-        finally:
-            if tmp_wav and os.path.exists(tmp_wav):
-                os.remove(tmp_wav)
+        result = _WHISPER_MODEL.transcribe(tmp_wav)
+        return (result.get("text") or "").strip()
     except Exception:
         return ""
     finally:
-        if clip:
-            clip.close()
+        if tmp_wav and os.path.exists(tmp_wav):
+            os.remove(tmp_wav)
+
+
+def _safe_read_general_doc(path):
+    try:
+        from unstructured.partition.auto import partition
+    except ImportError:
+        return ""
+
+    try:
+        elements = partition(filename=path)
+        text = "\n".join(str(element).strip() for element in elements if str(element).strip())
+        return text
+    except Exception:
+        return ""
+
+
+def _detect_file_kind(path):
+    ext = os.path.splitext(path)[1].lower()
+    mime, _ = mimetypes.guess_type(path)
+    mime = (mime or "").lower()
+
+    if mime.startswith("image/") or ext in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".gif"}:
+        return "image"
+    if mime.startswith("video/") or ext in {".mp4", ".mov", ".avi", ".mkv", ".webm"}:
+        return "video"
+    if mime == "application/pdf" or ext == ".pdf":
+        return "pdf"
+    if mime.startswith("text/") or ext in {".txt", ".md", ".csv", ".json", ".py", ".js", ".html", ".css"}:
+        return "text"
+    return "general"
 
 
 def parse_file(path):
+    if not path or not os.path.exists(path):
+        raise ValueError("File path does not exist.")
+
     ext = os.path.splitext(path)[1].lower()
-    if ext in {".txt", ".md", ".csv", ".json", ".py", ".js", ".html", ".css"}:
+    kind = _detect_file_kind(path)
+
+    if kind == "text":
         return _safe_read_text(path)
-    if ext == ".pdf":
-        return _safe_read_pdf(path)
-    if ext in {".pptx", ".ppt"}:
-        text = _safe_read_pptx(path)
+    if kind == "pdf":
+        text = _safe_read_pdf(path)
         if text:
             return text
-        return _safe_read_text(path)
-    if ext == ".docx":
-        text = _safe_read_docx(path)
-        if text:
-            return text
-        return _safe_read_text(path)
-    if ext in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff"}:
+        return _safe_read_general_doc(path)
+    if kind == "image":
         return _safe_read_image(path)
-    if ext in {".mp4", ".mov", ".avi", ".mkv", ".webm"}:
+    if kind == "video":
         return _safe_read_video(path)
-    raise ValueError(f"Unsupported file type: {ext}. Supported: .txt, .md, .pdf, .docx, .pptx, images, videos")
+
+    text = _safe_read_general_doc(path)
+    if text:
+        return text
+
+    ext = os.path.splitext(path)[1].lower()
+    if ext in {".docx", ".pptx", ".ppt", ".rtf", ".odt", ".doc"}:
+        fallback = _safe_read_docx(path) if ext in {".docx"} else _safe_read_pptx(path)
+        if fallback:
+            return fallback
+
+    raise ValueError(f"Unsupported or unreadable file type: {ext or 'unknown'}")
 
 _parse_file = parse_file
 
