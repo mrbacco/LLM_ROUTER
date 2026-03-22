@@ -135,6 +135,16 @@ for(const item of files){
     bullets.push(`${name}: ${wc} words across ${sc} sentences, with ${uc} unique terms.`)
   }
 
+  const contentBullets=Array.isArray(analysis.content_bullets) ? analysis.content_bullets : []
+  if(contentBullets.length>0){
+    contentBullets.slice(0,10).forEach((entry)=>{
+      const point=String(entry || "").trim()
+      if(point){
+        bullets.push(`${name}: ${point}`)
+      }
+    })
+  }
+
   const topWords=Array.isArray(analysis.top_words) ? analysis.top_words : []
   if(topWords.length>0){
     const topTerms=topWords
@@ -150,7 +160,7 @@ for(const item of files){
   }
 
   const summary=(analysis.summary || "").trim()
-  if(summary){
+  if(summary && contentBullets.length===0){
     const lead=summary.split(/(?<=[.!?])\s+/)[0] || summary
     bullets.push(`${name}: Opening summary insight: ${lead}`)
   }

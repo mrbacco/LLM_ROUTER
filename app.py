@@ -837,6 +837,7 @@ def analyze_text_content(text):
     if not text:
         return {
             "summary": "No text available",
+            "content_bullets": [],
             "char_count": 0,
             "word_count": 0,
             "sentence_count": 0,
@@ -846,54 +847,51 @@ def analyze_text_content(text):
             "analytical_description": "No text could be extracted from this file.",
         }
 
-    def summarize_text(content):
-        global _TEXT_SUMMARIZER
+    def build_content_bullets(content, max_items=10):
+        clean = re.sub(r"\s+", " ", content or "").strip()
+        if not clean:
+            return []
 
-        backend = os.getenv("TEXT_SUMMARY_BACKEND", "llm").strip().lower()
-        model_name = os.getenv("TRANSFORMERS_SUMMARY_MODEL", "sshleifer/distilbart-cnn-12-6").strip()
+        bullets = []
+        seen = set()
 
-        snippet = content[:12000]
-        if backend in {"transformers", "auto"}:
-            try:
-                import importlib
-                transformers_module = importlib.import_module("transformers")
-                pipeline = transformers_module.pipeline
+        def add_candidate(value):
+            item = re.sub(r"\s+", " ", value or "").strip(" -\t\n\r")
+            if len(item) < 25:
+                return
+            if len(item) > 220:
+                item = item[:217].rstrip() + "..."
+            key = item.lower()
+            if key in seen:
+                return
+            seen.add(key)
+            bullets.append(item)
 
-                if _TEXT_SUMMARIZER is None:
-                    _TEXT_SUMMARIZER = pipeline("summarization", model=model_name)
+        paragraphs = [p.strip() for p in re.split(r"\n\s*\n", content) if p.strip()]
+        for paragraph in paragraphs:
+            if len(bullets) >= max_items:
+                break
+            first_sentence = re.split(r"(?<=[.!?])\s+", paragraph, maxsplit=1)[0]
+            add_candidate(first_sentence or paragraph)
 
-                max_len = min(180, max(60, len(snippet.split()) // 3))
-                result = _TEXT_SUMMARIZER(snippet, max_length=max_len, min_length=40, do_sample=False)
-                summary_text = ((result or [{}])[0].get("summary_text") or "").strip()
-                if summary_text:
-                    return summary_text, "transformers"
-            except Exception as exc:
-                bac_log(f"BAC: transformers summary fallback used: {exc}")
+        if len(bullets) < max_items:
+            for sentence in re.split(r"(?<=[.!?])\s+", clean):
+                if len(bullets) >= max_items:
+                    break
+                add_candidate(sentence)
 
-        if backend in {"llm", "auto", "transformers"}:
-            try:
-                prompt = (
-                    "Summarize the following content in 6-10 concise bullet points and one final paragraph. "
-                    "Keep it factual and easy to scan.\n\n"
-                    f"Content:\n{snippet}"
-                )
-                response = ollama.chat(
-                    model=OLLAMA_DEFAULT_MODEL,
-                    messages=[
-                        {"role": "system", "content": "You create precise summaries from source documents."},
-                        {"role": "user", "content": prompt},
-                    ],
-                )
-                summary_text = ((response.get("message") or {}).get("content") or "").strip()
-                if summary_text:
-                    return summary_text, "llm"
-            except Exception as exc:
-                bac_log(f"BAC: llm summary fallback used: {exc}")
+        if not bullets:
+            chunks = re.split(r"[;:\n]+", clean)
+            for chunk in chunks:
+                if len(bullets) >= max_items:
+                    break
+                add_candidate(chunk)
 
-        # Last-resort summary keeps API behavior deterministic if model backends are unavailable.
-        return content[:1000] + ("..." if len(content) > 1000 else ""), "heuristic"
+        return bullets[:max_items]
 
-    summary_text, summary_source = summarize_text(text)
+    content_bullets = build_content_bullets(text)
+    summary_text = "\n".join(f"- {item}" for item in content_bullets) if content_bullets else text[:1000] + ("..." if len(text) > 1000 else "")
+    summary_source = "content_bullets"
 
     words = re.findall(r"\w+", text.lower())
     word_count = len(words)
@@ -921,6 +919,7 @@ def analyze_text_content(text):
     return {
         "summary": summary_text,
         "summary_source": summary_source,
+        "content_bullets": content_bullets,
         "char_count": len(text),
         "word_count": word_count,
         "sentence_count": len(sentences),

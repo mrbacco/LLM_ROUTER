@@ -59,18 +59,76 @@ def _safe_read_text(path):
 
 
 def _safe_read_pdf(path):
+    fitz = None
     try:
-        import fitz
+        import fitz as _fitz
+        fitz = _fitz
     except ImportError:
-        return ""
+        fitz = None
+
+    cv2 = None
+    pytesseract = None
+    np = None
+    try:
+        import cv2 as _cv2
+        cv2 = _cv2
+    except Exception:
+        cv2 = None
+    try:
+        import pytesseract as _pytesseract
+        pytesseract = _pytesseract
+    except Exception:
+        pytesseract = None
+    try:
+        import numpy as _np
+        np = _np
+    except Exception:
+        np = None
+
+    if fitz is None:
+        try:
+            from pypdf import PdfReader
+            reader = PdfReader(path)
+            parts = []
+            for page in reader.pages:
+                page_text = (page.extract_text() or "").strip()
+                if page_text:
+                    parts.append(page_text)
+            return "\n".join(parts)
+        except Exception:
+            return ""
 
     try:
         parts = []
         with fitz.open(path) as doc:
             for page in doc:
-                page_text = page.get_text("text") or ""
+                page_text = (page.get_text("text") or "").strip()
                 if page_text:
                     parts.append(page_text)
+
+                # OCR fallback for scanned/image-only PDF pages.
+                if page_text or cv2 is None or pytesseract is None or np is None:
+                    continue
+
+                try:
+                    pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0), alpha=False)
+                    arr = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
+
+                    if pix.n == 1:
+                        bgr = cv2.cvtColor(arr, cv2.COLOR_GRAY2BGR)
+                    else:
+                        rgb = arr[:, :, :3]
+                        bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+
+                    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+                    denoised = cv2.GaussianBlur(gray, (3, 3), 0)
+                    _, thresh = cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                    ocr_text = (pytesseract.image_to_string(thresh) or "").strip()
+                    if ocr_text:
+                        parts.append(ocr_text)
+                except Exception:
+                    continue
+
         return "\n".join(parts)
     except Exception:
         return ""
@@ -123,11 +181,31 @@ def _safe_read_docx(path):
     try:
         import docx
     except ImportError:
-        return ""
+        docx = None
+
+    if docx is not None:
+        try:
+            doc = docx.Document(path)
+            paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+            return "\n".join(paragraphs)
+        except Exception:
+            pass
 
     try:
-        doc = docx.Document(path)
-        paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+        import zipfile
+        import xml.etree.ElementTree as ET
+
+        with zipfile.ZipFile(path) as archive:
+            xml_bytes = archive.read("word/document.xml")
+
+        root = ET.fromstring(xml_bytes)
+        ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+        paragraphs = []
+        for paragraph in root.findall(".//w:p", ns):
+            texts = [node.text for node in paragraph.findall(".//w:t", ns) if node.text]
+            line = "".join(texts).strip()
+            if line:
+                paragraphs.append(line)
         return "\n".join(paragraphs)
     except Exception:
         return ""
